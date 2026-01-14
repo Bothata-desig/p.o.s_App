@@ -1,0 +1,7 @@
+{
+  "name": "CloudPOS Pro",
+  "description": "A robust, software-based Point-of-Sale system for retail businesses with local data persistence and inventory tracking.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
