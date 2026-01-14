@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Product, SaleRecord, OrderItem, ViewState } from './types';
+import { Product, SaleRecord, OrderItem, ViewState, AuthSession } from './types';
 import { INITIAL_PRODUCTS, CATEGORIES } from './constants';
 import { 
   IconShoppingBag, 
@@ -10,21 +10,36 @@ import {
   IconMinus, 
   IconTrash, 
   IconZap, 
-  IconSearch 
+  IconSearch,
+  IconSettings,
+  IconX
 } from './components/Icons';
+import Login from './components/Login';
+import { logoutUser, getCurrentSession } from './services/authService';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 
 const App: React.FC = () => {
+  // Authentication state
+  const [session, setSession] = useState<AuthSession | null>(getCurrentSession());
+  const [isInitialized, setIsInitialized] = useState(false);
+
   // State initialization: Load from LocalStorage (like a notes app)
   const [products, setProducts] = useState<Product[]>(() => {
-    const saved = localStorage.getItem('pos_products');
-    // If no data exists, we start with an empty catalog as requested
-    return saved ? JSON.parse(saved) : INITIAL_PRODUCTS;
+    try {
+      const saved = localStorage.getItem('pos_products');
+      return saved ? JSON.parse(saved) : INITIAL_PRODUCTS;
+    } catch {
+      return INITIAL_PRODUCTS;
+    }
   });
   
   const [sales, setSales] = useState<SaleRecord[]>(() => {
-    const saved = localStorage.getItem('pos_sales');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('pos_sales');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
   });
 
   const [currentView, setCurrentView] = useState<ViewState>('pos');
@@ -33,15 +48,71 @@ const App: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
   const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
+  const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
+
+  // Validate session on mount
+  useEffect(() => {
+    const currentSession = getCurrentSession();
+    if (currentSession) {
+      setSession(currentSession);
+    } else {
+      setSession(null);
+    }
+    setIsInitialized(true);
+  }, []);
+
+  // Clear selections when switching views
+  useEffect(() => {
+    setSelectedProductIds(new Set());
+  }, [currentView]);
+
+  // Handle login
+  const handleLoginSuccess = (newSession: AuthSession) => {
+    setSession(newSession);
+  };
+
+  // Handle logout
+  const handleLogout = () => {
+    logoutUser();
+    setSession(null);
+  };
 
   // Persistence: Save to LocalStorage whenever state changes
   useEffect(() => { 
-    localStorage.setItem('pos_products', JSON.stringify(products)); 
-  }, [products]);
+    if (isInitialized) {
+      try {
+        localStorage.setItem('pos_products', JSON.stringify(products)); 
+      } catch (error) {
+        console.error('Failed to save products:', error);
+      }
+    }
+  }, [products, isInitialized]);
 
   useEffect(() => { 
-    localStorage.setItem('pos_sales', JSON.stringify(sales)); 
-  }, [sales]);
+    if (isInitialized) {
+      try {
+        localStorage.setItem('pos_sales', JSON.stringify(sales)); 
+      } catch (error) {
+        console.error('Failed to save sales:', error);
+      }
+    }
+  }, [sales, isInitialized]);
+
+  // Re-check session if it becomes null but we should still be logged in
+  // Only check once after initialization, not on every session change
+  useEffect(() => {
+    if (isInitialized && !session) {
+      // Small delay to ensure localStorage is ready
+      const timer = setTimeout(() => {
+        const currentSession = getCurrentSession();
+        if (currentSession) {
+          setSession(currentSession);
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [isInitialized]); // Only depend on isInitialized, not session
 
   // Data Filtering
   const filteredProducts = useMemo(() => {
@@ -150,6 +221,43 @@ const App: React.FC = () => {
   const deleteProduct = (productId: string) => {
     if (confirm("Permanently remove this item from your catalog?")) {
       setProducts(prev => prev.filter(p => p.id !== productId));
+      setSelectedProductIds(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(productId);
+        return newSet;
+      });
+    }
+  };
+
+  const toggleProductSelection = (productId: string) => {
+    setSelectedProductIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(productId)) {
+        newSet.delete(productId);
+      } else {
+        newSet.add(productId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedProductIds.size === products.length) {
+      setSelectedProductIds(new Set());
+    } else {
+      setSelectedProductIds(new Set(products.map(p => p.id)));
+    }
+  };
+
+  const deleteSelectedProducts = () => {
+    if (selectedProductIds.size === 0) return;
+    
+    const count = selectedProductIds.size;
+    if (confirm(`Permanently remove ${count} selected item${count > 1 ? 's' : ''} from your catalog? This cannot be undone.`)) {
+      setProducts(prev => prev.filter(p => !selectedProductIds.has(p.id)));
+      // Remove deleted items from cart if they're there
+      setCart(prev => prev.filter(item => !selectedProductIds.has(item.productId)));
+      setSelectedProductIds(new Set());
     }
   };
 
@@ -179,6 +287,58 @@ const App: React.FC = () => {
       setSales([]);
     }
   };
+
+  const deleteAllProducts = () => {
+    if (confirm("Delete all products from your catalog? This cannot be undone.")) {
+      if (confirm("This will also empty your cart. Continue?")) {
+        setProducts([]);
+        setCart([]);
+      }
+    }
+  };
+
+  const clearAllData = () => {
+    if (confirm("This will permanently delete ALL your data:\n- All products\n- All sales records\n- Your cart\n\nThis action CANNOT be undone. Are you absolutely sure?")) {
+      if (confirm("Type 'DELETE' in your mind and click OK to confirm permanent deletion of all data.")) {
+        setProducts([]);
+        setSales([]);
+        setCart([]);
+        setIsDataManagementOpen(false);
+      }
+    }
+  };
+
+  const deleteUserAccount = () => {
+    if (confirm("This will delete your user account and all associated data. You will need to register again. Continue?")) {
+      if (confirm("Are you absolutely sure? This action cannot be undone!")) {
+        // Delete user account
+        const users = localStorage.getItem('pos_users');
+        if (users) {
+          const userList = JSON.parse(users);
+          const filtered = userList.filter((u: any) => u.id !== session.userId);
+          localStorage.setItem('pos_users', JSON.stringify(filtered));
+        }
+        // Clear all data and logout
+        setProducts([]);
+        setSales([]);
+        setCart([]);
+        handleLogout();
+      }
+    }
+  };
+
+  // Show login screen if not authenticated (after all hooks)
+  if (!isInitialized) {
+    return (
+      <div className="flex h-screen w-full bg-[#f8fafc] items-center justify-center">
+        <div className="text-slate-400 font-bold">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <Login onLoginSuccess={handleLoginSuccess} />;
+  }
 
   return (
     <div className="flex h-screen w-full bg-[#f8fafc] text-[#1e293b] overflow-hidden">
@@ -218,10 +378,25 @@ const App: React.FC = () => {
           </div>
           <div className="flex items-center gap-4">
             <div className="text-right hidden sm:block">
-              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Operator</p>
-              <p className="font-semibold text-sm">Active Session</p>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">{session.role}</p>
+              <p className="font-semibold text-sm">{session.username}</p>
             </div>
-            <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center font-bold text-slate-600 border border-white shadow-sm">AS</div>
+            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center font-bold text-white border border-white shadow-sm">
+              {session.username.substring(0, 2).toUpperCase()}
+            </div>
+            <button
+              onClick={() => setIsDataManagementOpen(true)}
+              className="ml-2 px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg transition-colors p-2"
+              title="Data Management"
+            >
+              <IconSettings />
+            </button>
+            <button
+              onClick={handleLogout}
+              className="ml-2 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm font-semibold transition-colors"
+            >
+              Logout
+            </button>
           </div>
         </header>
 
@@ -368,6 +543,14 @@ const App: React.FC = () => {
                     <p className="text-slate-400 text-sm font-medium mt-1">Manage and track your available stock levels.</p>
                   </div>
                   <div className="flex gap-3">
+                    {selectedProductIds.size > 0 && (
+                      <button 
+                        onClick={deleteSelectedProducts}
+                        className="bg-rose-600 text-white px-6 py-3 rounded-2xl text-sm font-bold hover:bg-rose-700 transition-all flex items-center gap-2 shadow-lg shadow-rose-600/20 active:scale-95"
+                      >
+                        <IconTrash /> Delete Selected ({selectedProductIds.size})
+                      </button>
+                    )}
                     <button 
                       onClick={() => setIsAddProductModalOpen(true)}
                       className="bg-blue-600 text-white px-6 py-3 rounded-2xl text-sm font-bold hover:bg-blue-700 transition-all flex items-center gap-2 shadow-lg shadow-blue-600/20 active:scale-95"
@@ -380,6 +563,14 @@ const App: React.FC = () => {
                   <table className="w-full text-left">
                     <thead className="bg-slate-50 text-slate-400 text-[10px] font-black uppercase tracking-widest border-b">
                       <tr>
+                        <th className="px-10 py-5">
+                          <input
+                            type="checkbox"
+                            checked={products.length > 0 && selectedProductIds.size === products.length}
+                            onChange={toggleSelectAll}
+                            className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+                          />
+                        </th>
                         <th className="px-10 py-5">Product Name</th>
                         <th className="px-10 py-5">Category</th>
                         <th className="px-10 py-5 text-right">Unit Price</th>
@@ -389,7 +580,15 @@ const App: React.FC = () => {
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-sm font-medium">
                       {products.map(p => (
-                        <tr key={p.id} className="hover:bg-blue-50/20 transition-colors group">
+                        <tr key={p.id} className={`hover:bg-blue-50/20 transition-colors group ${selectedProductIds.has(p.id) ? 'bg-blue-50' : ''}`}>
+                          <td className="px-10 py-6">
+                            <input
+                              type="checkbox"
+                              checked={selectedProductIds.has(p.id)}
+                              onChange={() => toggleProductSelection(p.id)}
+                              className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+                            />
+                          </td>
                           <td className="px-10 py-6">
                             <div className="flex items-center gap-4">
                               <div className={`w-10 h-10 rounded-xl ${p.color} flex items-center justify-center text-white font-bold text-xs`}>{p.name[0]}</div>
@@ -417,7 +616,7 @@ const App: React.FC = () => {
                       ))}
                       {products.length === 0 && (
                         <tr>
-                          <td colSpan={5} className="px-10 py-20 text-center text-slate-400 font-bold uppercase tracking-widest bg-white">
+                          <td colSpan={6} className="px-10 py-20 text-center text-slate-400 font-bold uppercase tracking-widest bg-white">
                             The catalog is empty. Start adding items above.
                           </td>
                         </tr>
@@ -478,17 +677,30 @@ const App: React.FC = () => {
                   </div>
                   <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-slate-100 max-h-[300px]">
                     {sales.slice().reverse().map(sale => (
-                      <div key={sale.id} className="p-8 flex items-center justify-between hover:bg-slate-50 transition-colors">
-                        <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><IconShoppingBag /></div>
-                          <div>
-                            <p className="font-bold text-slate-800">{sale.id}</p>
-                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{new Date(sale.timestamp).toLocaleTimeString()}</p>
+                      <div key={sale.id} className="p-8 hover:bg-slate-50 transition-colors">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500"><IconShoppingBag /></div>
+                            <div>
+                              <p className="font-bold text-slate-800">{sale.id}</p>
+                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{new Date(sale.timestamp).toLocaleTimeString()}</p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="font-black text-slate-900 text-lg">LSL {sale.total.toFixed(2)}</p>
+                            <p className="text-[10px] font-black text-emerald-500 uppercase tracking-tighter">{sale.paymentMethod}</p>
                           </div>
                         </div>
-                        <div className="text-right">
-                          <p className="font-black text-slate-900 text-lg">LSL {sale.total.toFixed(2)}</p>
-                          <p className="text-[10px] font-black text-emerald-500 uppercase tracking-tighter">{sale.paymentMethod}</p>
+                        <div className="ml-14 space-y-2">
+                          {sale.items.map((item, idx) => (
+                            <div key={idx} className="flex items-center justify-between text-sm">
+                              <div className="flex items-center gap-2">
+                                <span className="text-slate-600 font-semibold">{item.name}</span>
+                                <span className="text-slate-400 text-xs">×{item.quantity}</span>
+                              </div>
+                              <span className="text-slate-700 font-bold">LSL {(item.price * item.quantity).toFixed(2)}</span>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     ))}
@@ -564,6 +776,72 @@ const App: React.FC = () => {
                 <button type="button" onClick={() => setIsAddProductModalOpen(false)} className="flex-1 bg-slate-100 text-slate-600 font-bold py-5 rounded-2xl hover:bg-slate-200 transition-all active:scale-95">Cancel</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Data Management Modal */}
+      {isDataManagementOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-8 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-black text-slate-900">Data Management</h2>
+              <button
+                onClick={() => setIsDataManagementOpen(false)}
+                className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                <IconX className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {/* Clear Sales History */}
+              <button
+                onClick={clearHistory}
+                className="w-full p-4 text-left border border-slate-200 rounded-xl hover:bg-amber-50 hover:border-amber-300 transition-all group"
+              >
+                <p className="font-bold text-slate-900 group-hover:text-amber-700">Clear Sales History</p>
+                <p className="text-xs text-slate-500 mt-1">Delete all transaction records (cannot be undone)</p>
+              </button>
+
+              {/* Delete All Products */}
+              <button
+                onClick={deleteAllProducts}
+                className="w-full p-4 text-left border border-slate-200 rounded-xl hover:bg-orange-50 hover:border-orange-300 transition-all group"
+              >
+                <p className="font-bold text-slate-900 group-hover:text-orange-700">Delete All Products</p>
+                <p className="text-xs text-slate-500 mt-1">Remove all items from your catalog (cannot be undone)</p>
+              </button>
+
+              {/* Clear All Data */}
+              <button
+                onClick={clearAllData}
+                className="w-full p-4 text-left border border-slate-200 rounded-xl hover:bg-red-50 hover:border-red-300 transition-all group"
+              >
+                <p className="font-bold text-slate-900 group-hover:text-red-700">Clear All Data</p>
+                <p className="text-xs text-slate-500 mt-1">Delete products, sales, and cart (cannot be undone)</p>
+              </button>
+
+              {/* Delete User Account */}
+              <button
+                onClick={deleteUserAccount}
+                className="w-full p-4 text-left border border-red-300 rounded-xl hover:bg-red-50 transition-all group bg-red-50"
+              >
+                <p className="font-bold text-red-700">Delete User Account</p>
+                <p className="text-xs text-red-600 mt-1">Permanently delete your account and all data (irreversible)</p>
+              </button>
+            </div>
+
+            <div className="mt-8 p-4 bg-blue-50 rounded-xl border border-blue-200">
+              <p className="text-xs text-blue-700 font-semibold">💡 Tip: Data is stored locally on your device. Clearing your browser cache will also delete all data.</p>
+            </div>
+
+            <button
+              onClick={() => setIsDataManagementOpen(false)}
+              className="w-full mt-6 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold transition-colors"
+            >
+              Close
+            </button>
           </div>
         </div>
       )}

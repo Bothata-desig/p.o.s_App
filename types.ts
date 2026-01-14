@@ -30,3 +30,21 @@ export interface BusinessStats {
   totalOrders: number;
   averageOrderValue: number;
 }
+
+export interface User {
+  id: string;
+  username: string;
+  passwordHash: string;
+  email: string;
+  role: 'admin' | 'cashier' | 'manager';
+  createdAt: number;
+  lastLogin?: number;
+}
+
+export interface AuthSession {
+  userId: string;
+  username: string;
+  role: string;
+  loginTime: number;
+  sessionToken: string;
+}
